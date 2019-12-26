@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: CI_PROJECT_NAME
+  namespace: NAMESPACE
+  labels:
+    app: CI_PROJECT_NAME
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: CI_PROJECT_NAME
+
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: CI_PROJECT_NAME
+  namespace: NAMESPACE
+spec:
+  replicas: REPLICAS_NUM
+  selector:
+    matchLabels:
+      app: CI_PROJECT_NAME
+  template:
+    metadata:
+      labels:
+        app: CI_PROJECT_NAME
+    spec:
+      containers:
+      - name: CI_PROJECT_NAME
+        image: REPOSITORY_BASE/CI_PROJECT_NAME:BUILD_IMAGE_VERSION
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: REQUESTS_CPU
+            memory: 32Mi
+          limits:
+            cpu: LIMITS_CPU
+            memory: 20240Mi
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  minReadySeconds: MINREADSECONDS

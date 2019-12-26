@@ -1,0 +1,153 @@
+variables:
+  REPOSITORY_NAME: $CI_PROJECT_NAME
+  REPOSITORY_BASE: 'dr.tooc.in:50'
+  GIT_SUBMODULE_STRATEGY: recursive
+  # MAVEN_OPTS: "-Dmaven.test.skip=true -Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  KUBECONFIG: /etc/deploy/config
+  BUILD_SCRIPTS_DIR: .gitlab/seaman/spring-boot
+  SETTINGS_DOCKER_FILE: $BUILD_SCRIPTS_DIR/settings-docker.xml
+  CRT_FILE: $BUILD_SCRIPTS_DIR/toocin.crt
+  DOCKERFILE: $BUILD_SCRIPTS_DIR/Dockerfile
+  DEPLOYMENT_FILE: $BUILD_SCRIPTS_DIR/deployment.yaml
+  REPLICAS_NUM: 1
+  RELEASE_REPLICAS_NUM: 2
+  REQUESTS_CPU: '0.01'
+  LIMITS_CPU: '1.5'
+  MINREADSECONDS: 120
+  
+before_script:
+  - |
+    # regex="^v[0-9]+\.[0-9]+\.[0-9]+-?([a-z]+)?"
+    # if [[ $CI_COMMIT_TAG =~ $regex ]]; then
+      # buildType=${BASH_REMATCH[1]}
+      # if [ -z $buildType ]; then
+      #   buildType="release"
+      # fi
+    export BUILD_TYPE="unknown"
+    buildType=`echo $CI_COMMIT_TAG | sed 's/.*-//'`
+    if [ "$buildType" != "$CI_COMMIT_TAG" ]; then
+      export BUILD_TYPE="$buildType"
+    fi
+    export BUILD_IMAGE_VERSION="$CI_COMMIT_SHA-$buildType"
+    export BUILD_TYPE_UPPER_CASE=`eval echo $BUILD_TYPE | tr a-z A-Z`
+  - env
+
+stages:
+  - build
+  - package
+  - deploy
+
+.base_job:
+  only:
+    - /^v\d+\.\d+\.\d+(-[a-z]+)?$/
+  tags:
+    - build-runner
+
+build:
+  extends: .base_job
+  image: maven:3-jdk-8-alpine
+  stage: build
+  script:
+    - mvn -s $SETTINGS_DOCKER_FILE --batch-mode package -P$BUILD_TYPE -Dmaven.test.skip=true -Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository
+  cache:
+    paths:
+      - .m2
+  artifacts:
+    paths:
+      - target/
+
+package:
+  extends: .base_job
+  image: docker:stable
+  stage: package
+  dependencies:
+    - build
+  script:
+    - docker --version
+    - sh $BUILD_SCRIPTS_DIR/docker_build.sh $REPOSITORY_BASE $REPOSITORY_NAME $BUILD_IMAGE_VERSION $DOCKERFILE
+
+.base_deploy_job:
+  image: lachlanevenson/k8s-kubectl
+  stage: deploy
+  dependencies: []
+  script:
+    - |
+      deploymentFile=`eval echo '$'"${BUILD_TYPE_UPPER_CASE}_DEPLOYMENT_FILE"`
+      if [ -z $deploymentFile ]; then
+        deploymentFile=$DEPLOYMENT_FILE
+      fi
+      replicasNum=`eval echo '$'"${BUILD_TYPE_UPPER_CASE}_REPLICAS_NUM"`
+      if [ -z $replicasNum ]; then
+        replicasNum=$REPLICAS_NUM
+      fi
+      miniReady=`eval echo '$'"${BUILD_TYPE_UPPER_CASE}_MINREADSECONDS"`
+      if [ -z miniReady ]; then
+        miniReady=$MINREADSECONDS
+      fi
+      requestsCpu=`eval echo '$'"${BUILD_TYPE_UPPER_CASE}_REQUESTS_CPU"`
+      if [ -z $requestsCpu ]; then
+        requestsCpu=$REQUESTS_CPU
+      fi
+      limitsCpu=`eval echo '$'"${BUILD_TYPE_UPPER_CASE}_LIMITS_CPU"`
+      if [ -z $limitsCpu ]; then
+        limitsCpu=$LIMITS_CPU
+      fi
+    - sed -i "s/CI_PROJECT_NAME/$CI_PROJECT_NAME/g" $deploymentFile
+    - sed -i "s/NAMESPACE/default/g" $deploymentFile
+    - sed -i "s#REPOSITORY_BASE#$REPOSITORY_BASE#g" $deploymentFile
+    - sed -i "s/BUILD_IMAGE_VERSION/$BUILD_IMAGE_VERSION/g" $deploymentFile
+    - sed -i "s/REPLICAS_NUM/$replicasNum/g" $deploymentFile
+    - sed -i "s/REQUESTS_CPU/\"$requestsCpu\"/g" $deploymentFile
+    - sed -i "s/LIMITS_CPU/\"$limitsCpu\"/g" $deploymentFile
+    - sed -i "s/MINREADSECONDS/$miniReady/g" $deploymentFile
+    - cat $deploymentFile
+    - kubectl apply -f $deploymentFile
+  environment:
+    name: $BUILD_TYPE
+
+.base_aliyun_deploy_job:
+  extends: .base_deploy_job
+  before_script:
+    - mkdir -p /etc/deploy
+    - echo $kube_config | base64 -d > $KUBECONFIG
+
+deploy-debug:
+  extends: .base_deploy_job
+  tags:
+    - in-debug
+  only:
+    - /^v\d+\.\d+\.\d+-debug$/
+    
+deploy-dev:
+  extends: .base_deploy_job
+  tags:
+    - in-dev
+  only:
+    - /^v\d+\.\d+\.\d+-dev$/
+
+deploy-alpha:
+  extends: .base_aliyun_deploy_job
+  tags:
+    - k8s-alpha
+  only:
+    - /^v\d+\.\d+\.\d+-alpha$/
+
+deploy-release:
+  extends: .base_aliyun_deploy_job
+  tags:
+    - k8s-release
+  only:
+    - /^v\d+\.\d+\.\d+-release/
+
+deploy-stage:
+  extends: .base_deploy_job
+  tags:
+    - in-stage
+  only:
+    - /^v\d+\.\d+\.\d+-stage/
+deploy-hongkong:
+  extends: .base_deploy_job
+  tags:
+    - io-hongkong
+  only:
+    - /^v\d+\.\d+\.\d+-hongkong/
